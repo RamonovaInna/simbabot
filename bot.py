@@ -30,9 +30,16 @@ class RequestStates(StatesGroup):
 
 # ---------- КОМАНДЫ ---------- #
 @dp.message(Command("start"))
-async def start(message: types.Message):
+async def start(message: types.Message, state: FSMContext):
     await add_user(message.from_user.id, message.from_user.first_name)
-    await message.answer(f"Привет, {message.from_user.first_name}! Я готов к бытовым подвигам 💪")
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Маша", callback_data="select_Маша")],
+        [InlineKeyboardButton(text="Инна", callback_data="select_Инна")]
+    ])
+    await message.answer(f"Привет, {message.from_user.first_name}! Я готов к бытовым подвигам 💪
+
+Кому поручить задание?", reply_markup=keyboard)
+    await state.set_state(RequestStates.waiting_for_recipient)
 
 @dp.message(Command("создать_семью"))
 async def create_family(message: types.Message):
