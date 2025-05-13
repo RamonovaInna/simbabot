@@ -1,78 +1,71 @@
-import aiosqlite
-import logging
+import asyncio
+import os
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.enums import ParseMode
+from aiogram.filters import Command
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+from database import (
+    init_db,
+    add_user,
+    get_user_id_by_name,
+    save_task,
+    mark_task_status,
+    get_task_text,
+    get_task_sender,
+    create_family,
+    assign_user_to_family,
+    get_family_id_by_code,
+    get_family_members,
+    get_user_family_id
+)
 
-async def init_db():
-    try:
-        async with aiosqlite.connect("simba.db") as db:
-            with open("schema.sql", "r") as f:
-                await db.executescript(f.read())
-            await db.commit()
-            logger.info("Database initialized successfully")
-    except Exception as e:
-        logger.error(f"Error initializing database: {str(e)}")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-async def add_user(telegram_id: int, name: str):
-    try:
-        async with aiosqlite.connect("simba.db") as db:
-            await db.execute("INSERT OR REPLACE INTO users (telegram_id, name) VALUES (?, ?)", (telegram_id, name))
-            await db.commit()
-            logger.info(f"User {telegram_id} added with name {name}")
-    except Exception as e:
-        logger.error(f"Error adding user {telegram_id}: {str(e)}")
+bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+dp = Dispatcher()
 
-async def get_user_id_by_name(name: str) -> int:
-    try:
-        async with aiosqlite.connect("simba.db") as db:
-            async with db.execute("SELECT telegram_id FROM users WHERE name = ?", (name,)) as cursor:
-                result = await cursor.fetchone()
-                return result[0] if result else None
-    except Exception as e:
-        logger.error(f"Error getting user ID for name {name}: {str(e)}")
-        return None
+# ---------- FSM ---------- #
+class RequestStates(StatesGroup):
+    waiting_for_recipient = State()
+    waiting_for_task_choice = State()
+    waiting_for_custom_text = State()
 
-async def save_task(from_user_id: int, to_user_id: int, text: str) -> int:
-    try:
-        async with aiosqlite.connect("simba.db") as db:
-            result = await db.execute(
-                "INSERT INTO tasks (from_user_id, to_user_id, text) VALUES (?, ?, ?)",
-                (from_user_id, to_user_id, text)
-            )
-            await db.commit()
-            task_id = result.lastrowid
-            logger.info(f"Task {task_id} saved from {from_user_id} to {to_user_id}")
-            return task_id
-    except Exception as e:
-        logger.error(f"Error saving task: {str(e)}")
-        return None
+# ---------- КОМАНДЫ ---------- #
+@dp.message(Command("start"))
+async def start(message: types.Message):
+    await add_user(message.from_user.id, message.from_user.first_name)
+    await message.answer(f"Привет, {message.from_user.first_name}! Я готов к бытовым подвигам 💪")
 
-async def mark_task_status(task_id: int, status: str):
-    try:
-        async with aiosqlite.connect("simba.db") as db:
-            await db.execute("UPDATE tasks SET status = ? WHERE id = ?", (status, task_id))
-            await db.commit()
-            logger.info(f"Task {task_id} marked as {status}")
-    except Exception as e:
-        logger.error(f"Error marking task {task_id} status: {str(e)}")
+@dp.message(Command("создать_семью"))
+async def create_family_cmd(message: types.Message):
+    user_name = message.from_user.first_name
+    family_id, code = await create_family(f"Семья {user_name}")
+    await assign_user_to_family(message.from_user.id, family_id)
+    await message.answer(f"🎉 Семья создана!
+Код приглашения: <code>{code}</code>")
 
-async def get_task_text(task_id: int) -> str:
-    try:
-        async with aiosqlite.connect("simba.db") as db:
-            async with db.execute("SELECT text FROM tasks WHERE id = ?", (task_id,)) as cursor:
-                result = await cursor.fetchone()
-                return result[0] if result else None
-    except Exception as e:
-        logger.error(f"Error getting task text for task {task_id}: {str(e)}")
-        return None
+@dp.message(Command("присоединиться"))
+async def join_family_cmd(message: types.Message):
+    parts = message.text.split()
+    if len(parts) != 2:
+        await message.answer("Формат команды: /присоединиться ABC123")
+        return
+    code = parts[1].strip().upper()
+    family_id = await get_family_id_by_code(code)
+    if not family_id:
+        await message.answer("❌ Семья с таким кодом не найдена.")
+        return
+    await assign_user_to_family(message.from_user.id, family_id)
+    await message.answer("✅ Вы присоединились к семье!")
 
-async def get_task_sender(task_id: int) -> int:
-    try:
-        async with aiosqlite.connect("simba.db") as db:
-            async with db.execute("SELECT from_user_id FROM tasks WHERE id = ?", (task_id,)) as cursor:
-                result = await cursor.fetchone()
-                return result[0] if result else None
-    except Exception as e:
-        logger.error(f"Error getting task sender for task {task_id}: {str(e)}")
-        return None
+@dp.message(Command("семья"))
+async def show_family(message: types.Message):
+    family_id = await get_user_family_id(message.from_user.id)
+    if not family_id:
+        await message.answer("😕 Вы пока не в семье. Создайте или присоединитесь.")
+        return
+    members = await get_family_members(family_id)
+    await message.answer("👨‍👩‍👧‍👦 Ваша семья:\n" + "\n".join(f"• {name}" for name in members))
